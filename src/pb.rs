@@ -52,8 +52,9 @@ pub struct ProgressBar<T: Write> {
     message: String,
     last_refresh_time: SteadyTime,
     max_refresh_rate: Option<time::Duration>,
-    pub is_finish: bool,
-    pub is_multibar: bool,
+    pub(crate) is_multibar: bool,
+    pub(crate) is_finish: bool,
+    pub is_visible: bool,
     pub show_bar: bool,
     pub show_speed: bool,
     pub show_percent: bool,
@@ -116,6 +117,7 @@ impl<T: Write> ProgressBar<T> {
             units: Units::Default,
             is_finish: false,
             is_multibar: false,
+            is_visible: true,
             show_bar: true,
             show_speed: true,
             show_percent: true,
@@ -214,7 +216,11 @@ impl<T: Write> ProgressBar<T> {
         if tick_fmt != TICK_FORMAT {
             self.show_tick = true;
         }
-        self.tick = tick_fmt.split("").map(|x| x.to_owned()).filter(|x| x != "").collect();
+        self.tick = tick_fmt
+            .split("")
+            .map(|x| x.to_owned())
+            .filter(|x| x != "")
+            .collect();
     }
 
     /// Set width, or `None` for default.
@@ -287,11 +293,11 @@ impl<T: Write> ProgressBar<T> {
     }
 
     /// Manually set the current value of the bar
-    /// 
+    ///
     /// # Examples
     /// ```no_run
     /// use pbr::ProgressBar;
-    /// 
+    ///
     /// let mut pb = ProgressBar::new(10);
     /// pb.set(8);
     /// pb.finish();
@@ -314,6 +320,11 @@ impl<T: Write> ProgressBar<T> {
             }
         }
 
+        if !self.is_visible {
+            printfl!(self.handle, "");
+            return;
+        }
+
         let time_elapsed = time_to_std(now - self.start_time);
         let speed = self.current as f64 / fract_dur(time_elapsed);
         let width = self.width();
@@ -327,7 +338,7 @@ impl<T: Write> ProgressBar<T> {
         if self.show_percent {
             let percent = self.current as f64 / (self.total as f64 / 100f64);
             suffix = suffix +
-                     &format!(" {:.*} % ", 2, if percent.is_nan() { 0.0 } else { percent });
+                &format!(" {:.*} % ", 2, if percent.is_nan() { 0.0 } else { percent });
         }
         // speed box
         if self.show_speed {
@@ -355,10 +366,10 @@ impl<T: Write> ProgressBar<T> {
         if self.show_counter {
             let (c, t) = (self.current as f64, self.total as f64);
             prefix = prefix +
-                     &match self.units {
-                Units::Default => format!("{} / {} ", c, t),
-                Units::Bytes => format!("{} / {} ", kb_fmt!(c), kb_fmt!(t)),
-            };
+                &match self.units {
+                    Units::Default => format!("{} / {} ", c, t),
+                    Units::Bytes => format!("{} / {} ", kb_fmt!(c), kb_fmt!(t)),
+                };
         }
         // tick box
         if self.show_tick {
@@ -376,7 +387,7 @@ impl<T: Write> ProgressBar<T> {
                     base = self.bar_start.clone();
                     if rema_count > 0 && curr_count > 0 {
                         base = base + repeat!(self.bar_current.to_string(), curr_count - 1) +
-                               &self.bar_current_n;
+                            &self.bar_current_n;
                     } else {
                         base = base + repeat!(self.bar_current.to_string(), curr_count);
                     }
@@ -421,14 +432,14 @@ impl<T: Write> ProgressBar<T> {
 
     /// Calling finish manually will set current to total and draw
     /// the last time
-    pub fn finish(&mut self) {
+    pub fn finish(mut self) {
         self.finish_draw();
         printfl!(self.handle, "");
     }
 
 
     /// Call finish and write string `s` that will replace the progress bar.
-    pub fn finish_print(&mut self, s: &str) {
+    pub fn finish_print(mut self, s: &str) {
         self.finish_draw();
         let width = self.width();
         let mut out = format!("{}", s);
@@ -444,7 +455,7 @@ impl<T: Write> ProgressBar<T> {
     ///
     /// If the ProgressBar is part of MultiBar instance, you should use
     /// `finish_print` to print message.
-    pub fn finish_println(&mut self, s: &str) {
+    pub fn finish_println(mut self, s: &str) {
         // `finish_println` does not allow in MultiBar mode, because printing
         // new line will break the multiBar output.
         if self.is_multibar {
@@ -465,7 +476,13 @@ impl<T: Write> ProgressBar<T> {
         }
     }
 }
-
+impl<T: Write> Drop for ProgressBar<T> {
+    fn drop(&mut self) {
+        if !self.is_finish {
+            printfl!(self.handle, "");
+        }
+    }
+}
 // Implement io::Writer
 impl<T: Write> Write for ProgressBar<T> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -481,7 +498,9 @@ impl<T: Write> Write for ProgressBar<T> {
 fn time_to_std(d: time::Duration) -> Duration {
     if d > time::Duration::zero() {
         let secs = d.num_seconds();
-        let nsecs = (d - time::Duration::seconds(secs)).num_nanoseconds().unwrap();
+        let nsecs = (d - time::Duration::seconds(secs))
+            .num_nanoseconds()
+            .unwrap();
         Duration::new(secs as u64, nsecs as u32)
     } else {
         Duration::new(0, 1)
@@ -501,8 +520,10 @@ mod test {
         let mut pb = ProgressBar::new(10);
         pb.add(2);
         assert!(pb.current == 2, "should add the given `n` to current");
-        assert!(pb.add(2) == pb.current,
-                "add should return the current value");
+        assert!(
+            pb.add(2) == pb.current,
+            "add should return the current value"
+        );
     }
 
     #[test]
@@ -517,16 +538,9 @@ mod test {
         let fmt = "[~> ]";
         let mut pb = ProgressBar::new(1);
         pb.format(fmt);
-        assert!(pb.bar_start + &pb.bar_current + &pb.bar_current_n + &pb.bar_remain +
-                &pb.bar_end == fmt);
-    }
-
-    #[test]
-    fn finish() {
-        let mut pb = ProgressBar::new(10);
-        pb.finish();
-        assert!(pb.current == pb.total, "should set current to total");
-        assert!(pb.is_finish, "should set is_finish to true");
+        assert!(
+            pb.bar_start + &pb.bar_current + &pb.bar_current_n + &pb.bar_remain + &pb.bar_end == fmt
+        );
     }
 
     #[test]

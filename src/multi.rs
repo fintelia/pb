@@ -2,8 +2,15 @@ use pb::ProgressBar;
 use std::str::from_utf8;
 use tty::move_cursor_up;
 use std::io::{Stdout, Result, Write};
+use std::iter::repeat;
 use std::sync::mpsc;
 use std::sync::mpsc::{Sender, Receiver};
+
+macro_rules! repeat {
+    ($s: expr, $n: expr) => {{
+        &repeat($s).take($n).collect::<String>()
+    }}
+}
 
 pub struct MultiBar<T: Write> {
     nlines: usize,
@@ -22,7 +29,7 @@ impl MultiBar<Stdout> {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```ignore
     /// use std::thread;
     /// use pbr::MultiBar;
     ///
@@ -66,7 +73,7 @@ impl<T: Write> MultiBar<T> {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```ignore
     /// use pbr::MultiBar;
     /// use std::io::stderr;
     ///
@@ -91,7 +98,7 @@ impl<T: Write> MultiBar<T> {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```ignore
     /// use pbr::MultiBar;
     ///
     /// let mut mb = MultiBar::new();
@@ -127,7 +134,7 @@ impl<T: Write> MultiBar<T> {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```ignore
     /// use pbr::MultiBar;
     ///
     /// let mut mb = MultiBar::new();
@@ -149,11 +156,13 @@ impl<T: Write> MultiBar<T> {
     pub fn create_bar(&mut self, total: u64) -> ProgressBar<Pipe> {
         self.println("");
         self.nbars += 1;
-        let mut p = ProgressBar::on(Pipe {
-                                        level: self.nlines - 1,
-                                        chan: self.chan.0.clone(),
-                                    },
-                                    total);
+        let mut p = ProgressBar::on(
+            Pipe {
+                level: self.nlines - 1,
+                chan: self.chan.0.clone(),
+            },
+            total,
+        );
         p.is_multibar = true;
         p.add(0);
         p
@@ -171,7 +180,7 @@ impl<T: Write> MultiBar<T> {
     ///
     /// # Examples
     ///
-    /// ```no_run
+    /// ```ignore
     /// use pbr::MultiBar;
     ///
     /// let mut mb = MultiBar::new();
@@ -187,30 +196,48 @@ impl<T: Write> MultiBar<T> {
     ///
     /// // ...
     /// ```
-    pub fn listen(&mut self) {
-        let mut first = true;
-        let mut nbars = self.nbars;
-        while nbars > 0 {
+    pub fn listen(mut self) {
+        drop(self.chan.0);
 
-            // receive message
-            let msg = self.chan.1.recv().unwrap();
-            if msg.done {
-                nbars -= 1;
-                continue;
-            }
+        let mut nlines = 0;
+        let mut nblank_lines = 0;
+        let mut max_width = 0;
+        while let Ok(msg) = self.chan.1.recv() {
             self.lines[msg.level] = msg.string;
 
             // and draw
             let mut out = String::new();
-            if !first {
-                out += &move_cursor_up(self.nlines);
-            } else {
-                first = false;
+            if nlines + nblank_lines > 0 {
+                out += &move_cursor_up(nlines + nblank_lines);
             }
+
+            let mut new_nlines = 0;
             for l in self.lines.iter() {
-                out.push_str(&format!("\r{}\n", l));
+                if l.len() > 0 {
+                    max_width = max_width.max(l.len());
+                    out.push_str(&format!("\r{}\n", l));
+                    new_nlines += 1;
+                }
+            }
+
+            nblank_lines = nlines - new_nlines.min(nlines);
+            nlines = new_nlines;
+
+            for _ in 0..nblank_lines {
+                out.push_str(&format!("\r\r{}\n", repeat!(" ", max_width - 1)));
+            }
+
+            printfl!(self.handle, "{}", out);
+        }
+
+        if nlines > 0 {
+            let mut out = String::new();
+            out += &move_cursor_up(nlines);
+            for _ in 0..nlines {
+                out.push_str(&format!("\r{}\n", repeat!(" ", max_width - 1)));
             }
             printfl!(self.handle, "{}", out);
+            printfl!(self.handle, "{}", move_cursor_up(nlines));
         }
     }
 }
@@ -225,8 +252,6 @@ impl Write for Pipe {
         let s = from_utf8(buf).unwrap().to_owned();
         self.chan
             .send(WriteMsg {
-                // finish method emit empty string
-                done: s == "",
                 level: self.level,
                 string: s,
             })
@@ -242,7 +267,6 @@ impl Write for Pipe {
 // WriteMsg is the message format used to communicate
 // between MultiBar and its bars
 struct WriteMsg {
-    done: bool,
     level: usize,
     string: String,
 }
